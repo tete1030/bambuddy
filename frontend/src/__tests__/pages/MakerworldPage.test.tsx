@@ -115,13 +115,99 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
 
-    const input = await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i);
+    const input = await screen.findByPlaceholderText(/makerworld\.com/i);
     await userEvent.type(input, 'https://makerworld.com/en/models/1400373-slug#profileId-1452154');
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
 
     expect(await screen.findByText('Seed Starter')).toBeInTheDocument();
     expect(screen.getByText('9 cells')).toBeInTheDocument();
     expect(screen.getByText('12 cells')).toBeInTheDocument();
+  });
+
+  it('uses the China region, selected instance and source type for import', async () => {
+    useAuthedHandlers();
+    const statusRegions: string[] = [];
+    let importBody: Record<string, unknown> | null = null;
+    server.use(
+      http.get('*/makerworld/status', ({ request }) => {
+        const sourceType = new URL(request.url).searchParams.get('source_type') ?? '';
+        statusRegions.push(sourceType);
+        return HttpResponse.json({
+          has_cloud_token: true,
+          can_download: sourceType === 'makerworld_cn',
+          source_type: sourceType,
+        });
+      }),
+      http.post('*/makerworld/resolve', () => HttpResponse.json(resolveResponse({
+        model_id: 2587619,
+        source_type: 'makerworld_cn',
+        profile_id: 2978680,
+        selected_instance_id: 2978680,
+        selected_profile_id: 151216040,
+        source_page_url: 'https://makerworld.com.cn/models/2587619#profileId-2978680',
+        design: { ...resolveResponse().design, coverUrl: 'https://makerworld.bblmw.cn/cover.png' },
+        instances: [{ id: 2978680, profileId: 151216040, title: 'China plate' }],
+      }))),
+      http.post('*/makerworld/import', async ({ request }) => {
+        importBody = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({
+          library_file_id: 123,
+          filename: 'china.3mf',
+          folder_id: 7,
+          profile_id: 151216040,
+          was_existing: false,
+        });
+      }),
+    );
+    render(<MakerworldPage />);
+    await userEvent.type(
+      await screen.findByPlaceholderText(/makerworld\.com/i),
+      'https://makerworld.com.cn/zh/models/2587619#profileId-2978680',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
+
+    expect(await screen.findByText('China plate')).toBeInTheDocument();
+    expect(screen.getByText('Selected from link')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Open on MakerWorld/i })).toHaveAttribute(
+      'href', 'https://makerworld.com.cn/models/2587619#profileId-2978680',
+    );
+    expect(screen.getByAltText('Seed Starter')).toHaveAttribute(
+      'src', expect.stringContaining('makerworld.bblmw.cn'),
+    );
+    await waitFor(() => expect(statusRegions).toContain('makerworld_cn'));
+    await userEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(importBody).toMatchObject({
+      model_id: 2587619,
+      instance_id: 2978680,
+      profile_id: 151216040,
+      source_type: 'makerworld_cn',
+    }));
+    expect((await screen.findAllByText('Imported to your library')).length).toBeGreaterThan(0);
+  });
+
+  it('explains a China account-region mismatch before enabling import', async () => {
+    useAuthedHandlers();
+    server.use(
+      http.get('*/makerworld/status', ({ request }) => {
+        const china = new URL(request.url).searchParams.get('source_type') === 'makerworld_cn';
+        return HttpResponse.json({
+          has_cloud_token: true,
+          can_download: !china,
+          region_mismatch: china,
+        });
+      }),
+      http.post('*/makerworld/resolve', () => HttpResponse.json(resolveResponse({
+        source_type: 'makerworld_cn',
+      }))),
+    );
+    render(<MakerworldPage />);
+    await userEvent.type(
+      await screen.findByPlaceholderText(/makerworld\.com/i),
+      'https://makerworld.com.cn/zh/models/2587619',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
+    expect(await screen.findByText('Bambu Cloud region does not match')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Save$/ })[0]).toBeDisabled();
   });
 
   it('shows the "Already in library" badge when backend reports prior imports', async () => {
@@ -133,7 +219,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -147,7 +233,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -165,7 +251,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -183,7 +269,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -203,7 +289,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -223,7 +309,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -241,7 +327,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
 
-    const input = await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i);
+    const input = await screen.findByPlaceholderText(/makerworld\.com/i);
     await userEvent.type(input, 'https://makerworld.com/en/models/1400373');
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
 
@@ -274,7 +360,7 @@ describe('MakerworldPage', () => {
     render(<MakerworldPage />);
 
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));
@@ -348,7 +434,7 @@ describe('MakerworldPage', () => {
     );
     render(<MakerworldPage />);
     await userEvent.type(
-      await screen.findByPlaceholderText(/https:\/\/makerworld\.com/i),
+      await screen.findByPlaceholderText(/makerworld\.com/i),
       'https://makerworld.com/en/models/1400373',
     );
     await userEvent.click(screen.getByRole('button', { name: /Resolve/i }));

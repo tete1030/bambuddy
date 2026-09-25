@@ -36,7 +36,7 @@ function pickString(obj: Record<string, unknown> | undefined, key: string): stri
 // renders.
 function proxyCdnUrlsInHtml(html: string): string {
   return html.replace(
-    /(https?:\/\/(?:makerworld|public-cdn)\.bblmw\.com\/[^\s"']+)/gi,
+    /(https?:\/\/(?:makerworld|public-cdn)\.bblmw\.(?:com|cn)\/[^\s"']+)/gi,
     (match) => `/api/v1/makerworld/thumbnail?url=${encodeURIComponent(match)}`,
   );
 }
@@ -47,7 +47,7 @@ function proxyCdnUrlsInHtml(html: string): string {
 // in the render keep short-circuiting.
 function proxyCdn(url: string): string {
   if (!url) return '';
-  if (!/^https?:\/\/(makerworld|public-cdn)\.bblmw\.com\//i.test(url)) return url;
+  if (!/^https?:\/\/(makerworld|public-cdn)\.bblmw\.(com|cn)\//i.test(url)) return url;
   return `/api/v1/makerworld/thumbnail?url=${encodeURIComponent(url)}`;
 }
 function pickNumber(obj: Record<string, unknown> | undefined, key: string): number | null {
@@ -117,6 +117,8 @@ export function MakerworldPage() {
 
   const [urlInput, setUrlInput] = useState('');
   const [resolved, setResolved] = useState<MakerworldResolvedModel | null>(null);
+  const sourceType = resolved?.source_type ?? 'makerworld';
+  const isChina = sourceType === 'makerworld_cn';
   // Selected target folder. ``null`` means "let the backend use the default
   // MakerWorld folder" (auto-created if missing). Any other value is the id
   // of a user-selected folder; external read-only folders are filtered out
@@ -157,8 +159,8 @@ export function MakerworldPage() {
   >({});
 
   const statusQuery = useQuery({
-    queryKey: ['makerworld-status'],
-    queryFn: () => api.getMakerworldStatus(),
+    queryKey: ['makerworld-status', sourceType],
+    queryFn: () => api.getMakerworldStatus(sourceType),
   });
 
   const foldersQuery = useQuery({
@@ -224,7 +226,7 @@ export function MakerworldPage() {
 
   const importMutation = useMutation({
     mutationFn: ({ instanceId, profileId }: { instanceId: number; profileId: number | null }) =>
-      api.importMakerworldInstance(resolved?.model_id ?? 0, instanceId, profileId, selectedFolderId),
+      api.importMakerworldInstance(resolved?.model_id ?? 0, instanceId, profileId, selectedFolderId, sourceType),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       // Backend auto-creates a "MakerWorld" folder on first import; refresh
@@ -236,7 +238,9 @@ export function MakerworldPage() {
         setImportsByProfile((prev) => ({ ...prev, [data.profile_id!]: data }));
       }
       showToast(
-        data.was_existing ? t('makerworld.alreadyInLibrary') : t('makerworld.importSuccess', { filename: data.filename }),
+        data.was_existing
+          ? t(isChina ? 'makerworld.lastImportAlreadyInLibrary' : 'makerworld.alreadyInLibrary')
+          : t(isChina ? 'makerworld.lastImportSuccess' : 'makerworld.importSuccess', { filename: data.filename }),
         'success',
       );
     },
@@ -278,7 +282,7 @@ export function MakerworldPage() {
   // own "Download and Open" button behaviour.
   const sliceMutation = useMutation({
     mutationFn: ({ instanceId, profileId }: { instanceId: number; profileId: number | null }) =>
-      api.importMakerworldInstance(resolved?.model_id ?? 0, instanceId, profileId, selectedFolderId),
+      api.importMakerworldInstance(resolved?.model_id ?? 0, instanceId, profileId, selectedFolderId, sourceType),
     onSuccess: async (data: MakerworldImportResponse) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
@@ -411,6 +415,7 @@ export function MakerworldPage() {
   // token" either — saying "sign in" to someone who believes they already are
   // is what made this so confusing. Name the actual state.
   const signInExpired = statusQuery.data?.sign_in_expired ?? false;
+  const regionMismatch = statusQuery.data?.region_mismatch ?? false;
 
   const coverUrl = useMemo(() => pickString(design, 'coverUrl'), [design]);
   const title = pickString(design, 'title');
@@ -442,12 +447,16 @@ export function MakerworldPage() {
               <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
               <div className="text-sm">
                 <p className="font-medium text-amber-900 dark:text-amber-100">
-                  {signInExpired
+                  {regionMismatch
+                    ? t('makerworld.regionMismatchTitle')
+                    : signInExpired
                     ? t('makerworld.signInExpiredTitle')
                     : t('makerworld.signInRequiredTitle')}
                 </p>
                 <p className="text-amber-800 dark:text-amber-200 mt-1">
-                  {signInExpired
+                  {regionMismatch
+                    ? t('makerworld.regionMismatchBody')
+                    : signInExpired
                     ? t('makerworld.signInExpiredBody')
                     : t('makerworld.signInRequiredBody')}{' '}
                   <Link to="/profiles" className="underline">
@@ -504,6 +513,7 @@ export function MakerworldPage() {
               )}
               <div className="flex-1 min-w-0">
                 <h3 className="text-xl font-semibold truncate">{title || t('makerworld.untitledModel')}</h3>
+                {isChina && <span className="text-xs text-bambu-green">{t('makerworld.chinaLabel')}</span>}
                 {creator && (
                   <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                     {t('makerworld.byCreator', { name: pickString(creator, 'name') })}
@@ -536,7 +546,7 @@ export function MakerworldPage() {
                 )}
                 {resolved && (
                   <a
-                    href={`https://makerworld.com/models/${resolved.model_id}${resolved.profile_id ? `#profileId-${resolved.profile_id}` : ''}`}
+                    href={resolved.source_page_url ?? `https://makerworld.com/models/${resolved.model_id}${resolved.profile_id ? `#profileId-${resolved.profile_id}` : ''}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="mt-3 inline-flex items-center gap-1 text-xs text-brand-500 hover:underline"
@@ -565,7 +575,7 @@ export function MakerworldPage() {
                   className="text-sm px-2 py-1 border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
                   disabled={bulkProgress !== null}
                 >
-                  <option value="">{t('makerworld.folderAuto')}</option>
+                  <option value="">{t(isChina ? 'makerworld.folderAutoChina' : 'makerworld.folderAuto')}</option>
                   {(foldersQuery.data ?? [])
                     .filter((f) => !(f.is_external && f.external_readonly))
                     .flatMap((f) => flattenFolderTree(f))
@@ -671,6 +681,9 @@ export function MakerworldPage() {
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">
                           {instanceTitle || t('makerworld.plateDefaultName', { n: idx + 1 })}
+                          {resolved.profile_id !== null && resolved.selected_instance_id === instanceId && (
+                            <span className="ml-2 text-xs text-bambu-green">{t('makerworld.selectedFromLink')}</span>
+                          )}
                         </p>
                         <div className="flex flex-wrap gap-3 text-xs text-gray-500 dark:text-gray-400 mt-1">
                           {primaryPrinter && (
@@ -866,6 +879,9 @@ export function MakerworldPage() {
                         <p className="text-xs font-medium truncate" title={item.filename}>
                           {item.filename}
                         </p>
+                        {item.source_type === 'makerworld_cn' && (
+                          <span className="text-xs text-bambu-green">{t('makerworld.chinaLabel')}</span>
+                        )}
                         <div className="flex gap-0.5">
                           <Button
                             variant="ghost"

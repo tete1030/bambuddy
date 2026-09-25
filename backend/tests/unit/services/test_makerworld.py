@@ -8,6 +8,7 @@ from urllib.error import HTTPError, URLError
 import httpx
 import pytest
 
+from backend.app.services.model_providers import makerworld_china_provider, makerworld_provider, registry
 from backend.app.services.model_providers.base import ProviderResourceRef
 from backend.app.services.model_providers.makerworld.errors import (
     MakerWorldAuthError,
@@ -57,6 +58,149 @@ class TestParseUrl:
     def test_rejects_empty(self):
         with pytest.raises(MakerWorldUrlError):
             parse_url("")
+
+    def test_china_and_global_ids_stay_in_separate_namespaces(self):
+        china = "https://makerworld.com.cn/zh/models/2587619-example#profileId-2978680"
+        global_url = "https://makerworld.com/en/models/2587619-example#profileId-2978680"
+        china_provider = registry.find_for_url(china)
+        global_provider = registry.find_for_url(global_url)
+        assert china_provider is makerworld_china_provider
+        assert global_provider is makerworld_provider
+        assert china_provider.parse_url(china).sub_id == "2978680"
+        assert china_provider.parse_url(china).source_type == "makerworld_cn"
+        assert china_provider.canonical_url(china_provider.parse_url(china)) == (
+            "https://makerworld.com.cn/models/2587619#profileId-2978680"
+        )
+        assert global_provider.parse_url(global_url).source_type == "makerworld"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://makerworld.com.cn/zh/models/2587619oops",
+            "https://makerworld.com.cn/zh/models/2587619#profileId-nope",
+            "https://makerworld.com.cn.evil.example/models/2587619",
+            "http://makerworld.com.cn/models/2587619",
+        ],
+    )
+    def test_china_rejects_malformed_or_foreign_urls(self, url):
+        with pytest.raises(MakerWorldUrlError):
+            makerworld_china_provider.parse_url(url)
+
+
+class TestChinaProvider:
+    @pytest.fixture
+    def service(self):
+        return MakerWorldService(
+            client=MagicMock(spec=httpx.AsyncClient),
+            auth_token="test-token",
+            account_region="china",
+            required_region="china",
+            canonical_instance_ids=True,
+            design_api_base="https://api.bambulab.cn/v1/design-service",
+            profile_api_base="https://api.bambulab.cn/v1/iot-service/api/user/profile",
+            referer="https://makerworld.com.cn/",
+            thumbnail_hosts=makerworld_china_provider.thumbnail_hosts(),
+            download_hosts=makerworld_china_provider.download_hosts(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_china_metadata_and_manifest_use_cn_api_and_referer(self, service):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"modelId": "CN91056c50e00657"}
+        service._client.get = AsyncMock(return_value=response)
+
+        await service.get_design(2587619)
+        design_call = service._client.get.await_args
+        assert design_call.args[0] == "https://api.bambulab.cn/v1/design-service/design/2587619"
+        assert design_call.kwargs["headers"]["Referer"] == "https://makerworld.com.cn/"
+
+        await service.get_profile_download(151216040, "CN91056c50e00657")
+        profile_call = service._client.get.await_args
+        assert profile_call.args[0] == "https://api.bambulab.cn/v1/iot-service/api/user/profile/151216040"
+        assert profile_call.kwargs["params"] == {"model_id": "CN91056c50e00657"}
+
+    @pytest.mark.asyncio
+    async def test_china_download_hosts_are_exact_and_do_not_receive_bearer(self, service):
+        response = MagicMock()
+        response.status_code = 200
+
+        async def chunks():
+            yield b"PK\x03\x04"
+
+        response.aiter_bytes = chunks
+        stream = MagicMock()
+        stream.__aenter__ = AsyncMock(return_value=response)
+        stream.__aexit__ = AsyncMock(return_value=None)
+        service._client.stream = MagicMock(return_value=stream)
+        payload, _ = await service.download_3mf("https://model-file.bambulab.cn/f.3mf?sig=test")
+        assert payload == b"PK\x03\x04"
+        assert "Authorization" not in service._client.stream.call_args.kwargs["headers"]
+        assert service._client.stream.call_args.kwargs["follow_redirects"] is False
+        for url in (
+            "https://evil.model-file.bambulab.cn/f.3mf",
+            "https://model-file.bambulab.cn.evil.example/f.3mf",
+            "http://model-file.bambulab.cn/f.3mf",
+        ):
+            with pytest.raises(MakerWorldUrlError):
+                await service.download_3mf(url)
+
+    @pytest.mark.asyncio
+    async def test_china_thumbnail_uses_cn_allowlist_without_bearer(self, service):
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "image/png"}
+        response.content = b"\x89PNG"
+        service._client.get = AsyncMock(return_value=response)
+        payload, mime = await service.fetch_thumbnail("https://makerworld.bblmw.cn/cover.png")
+        assert (payload, mime) == (b"\x89PNG", "image/png")
+        assert "Authorization" not in service._client.get.await_args.kwargs["headers"]
+        with pytest.raises(MakerWorldUrlError):
+            await service.fetch_thumbnail("https://model-file.bambulab.cn/cover.png")
+
+    @pytest.mark.asyncio
+    async def test_resolve_maps_page_instance_to_internal_profile(self, service):
+        service.get_design = AsyncMock(return_value={"modelId": "CN91056c50e00657"})
+        service.get_design_instances = AsyncMock(
+            return_value={"hits": [{"id": 2978680, "profileId": 151216040, "title": "Sample"}]}
+        )
+        ref = ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="2978680")
+        resolved = await service.resolve(ref)
+        assert (resolved.selected_instance_id, resolved.selected_profile_id) == (2978680, 151216040)
+        with pytest.raises(MakerWorldUrlError, match="not found"):
+            await service.resolve(ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="999"))
+
+    @pytest.mark.asyncio
+    async def test_download_uses_cn_model_and_canonical_instance(self, service):
+        service.get_design = AsyncMock(return_value={"modelId": "CN91056c50e00657"})
+        service.get_design_instances = AsyncMock(return_value={"hits": [{"id": 2978680, "profileId": 151216040}]})
+        service.get_profile_download = AsyncMock(
+            return_value={"url": "https://model-file.bambulab.cn/f.3mf?sig=test", "name": "sample.3mf"}
+        )
+        ref = ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="151216040")
+        info = await service.get_download(ref)
+        service.get_profile_download.assert_awaited_once_with(151216040, "CN91056c50e00657")
+        assert info.profile_id == 151216040
+        assert info.ref.sub_id == "2978680"
+
+        with pytest.raises(MakerWorldUrlError, match="does not belong"):
+            await service.get_download(
+                ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="777")
+            )
+
+    @pytest.mark.asyncio
+    async def test_region_mismatch_does_not_report_expired_sign_in(self, service):
+        service._account_region = "global"
+        with patch(
+            "backend.app.services.model_providers.makerworld.service.is_cloud_token_invalid",
+            AsyncMock(return_value=False),
+        ):
+            status = await service.get_status(MagicMock())
+        assert status.region_mismatch is True
+        assert status.can_download is False
+        assert status.credential_rejected is False
+        with pytest.raises(MakerWorldAuthError, match="China region"):
+            await service.get_download(ProviderResourceRef(source_type="makerworld_cn", external_id="2587619"))
 
 
 class TestApiBase:

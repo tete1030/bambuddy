@@ -3,8 +3,8 @@
 The shared seam for "import a model from a 3D model website". Providers
 implement the interface (a ``ModelProvider`` descriptor + a per-request
 ``ProviderService`` transport) and register an instance here; the registry
-routes pasted URLs to the owning provider via ``find_for_url``. MakerWorld is
-the first (and currently only) registered provider.
+routes pasted URLs to the owning provider via ``find_for_url``. The global
+and China MakerWorld sites are registered separately to keep IDs distinct.
 """
 
 from backend.app.services.model_providers.base import (
@@ -24,10 +24,11 @@ from backend.app.services.model_providers.base import (
     ProviderUnavailableError,
     ProviderUrlError,
 )
-from backend.app.services.model_providers.makerworld import makerworld_provider
+from backend.app.services.model_providers.makerworld import makerworld_china_provider, makerworld_provider
 from backend.app.services.model_providers.registry import ModelProviderRegistry, registry
 
 registry.register(makerworld_provider)
+registry.register(makerworld_china_provider)
 
 __all__ = [
     "ModelProvider",
@@ -46,6 +47,7 @@ __all__ = [
     "ProviderStatus",
     "ProviderUnavailableError",
     "ProviderUrlError",
+    "makerworld_china_provider",
     "makerworld_provider",
     "registry",
 ]

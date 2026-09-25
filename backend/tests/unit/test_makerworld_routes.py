@@ -25,7 +25,7 @@ from backend.app.services.model_providers.base import (
     ProviderResourceRef,
     ProviderStatus,
 )
-from backend.app.services.model_providers.makerworld import makerworld_provider
+from backend.app.services.model_providers.makerworld import makerworld_china_provider, makerworld_provider
 
 
 def _download_info(
@@ -145,7 +145,10 @@ class TestThumbnail:
                 "/api/v1/makerworld/thumbnail",
                 params={"url": "https://makerworld.bblmw.com/img/x.png"},
             )
-        assert cls.call_args.kwargs["thumbnail_hosts"] == makerworld_provider.thumbnail_hosts()
+        assert cls.call_args.kwargs["thumbnail_hosts"] == (
+            *makerworld_provider.thumbnail_hosts(),
+            *makerworld_china_provider.thumbnail_hosts(),
+        )
 
     @pytest.mark.asyncio
     async def test_non_cdn_host_is_a_clean_400(self, async_client):
@@ -176,7 +179,32 @@ class TestStatus:
         body = resp.json()
         # Fresh in-memory DB has no stored token, so can_download must be false.
         # sign_in_expired is False, not True: there is no sign-in to have expired.
-        assert body == {"has_cloud_token": False, "can_download": False, "sign_in_expired": False}
+        assert body == {
+            "has_cloud_token": False,
+            "can_download": False,
+            "source_type": "makerworld",
+            "region_mismatch": False,
+            "sign_in_expired": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_china_status_reports_region_mismatch_without_expiry(self, async_client, db_session):
+        from backend.app.models.settings import Settings
+        from backend.app.services.bambu_cloud_credentials import CLOUD_REGION_KEY, CLOUD_TOKEN_KEY
+
+        db_session.add_all(
+            [Settings(key=CLOUD_TOKEN_KEY, value="test-token"), Settings(key=CLOUD_REGION_KEY, value="global")]
+        )
+        await db_session.commit()
+        resp = await async_client.get("/api/v1/makerworld/status?source_type=makerworld_cn")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "has_cloud_token": True,
+            "can_download": False,
+            "source_type": "makerworld_cn",
+            "region_mismatch": True,
+            "sign_in_expired": False,
+        }
 
     @pytest.mark.asyncio
     async def test_rejected_token_blocks_download_and_reports_expired(self, async_client, db_session):
@@ -196,6 +224,8 @@ class TestStatus:
         assert resp.json() == {
             "has_cloud_token": True,
             "can_download": False,
+            "source_type": "makerworld",
+            "region_mismatch": False,
             "sign_in_expired": True,
         }
 
@@ -223,6 +253,8 @@ class TestStatus:
         assert resp.json() == {
             "has_cloud_token": True,
             "can_download": False,
+            "source_type": "makerworld",
+            "region_mismatch": False,
             "sign_in_expired": True,
         }
 
@@ -266,6 +298,55 @@ class TestResolve:
         assert body["design"] == design_payload
         assert len(body["instances"]) == 2
         assert body["already_imported_library_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_china_url_keeps_page_instance_and_region(self, async_client):
+        svc = _fake_service(
+            resolve=ProviderResolvedModel(
+                ref=ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="2978680"),
+                design={"id": 2587619, "modelId": "CN91056c50e00657"},
+                instances=[{"id": 2978680, "profileId": 151216040}],
+                selected_instance_id=2978680,
+                selected_profile_id=151216040,
+            )
+        )
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/resolve",
+                json={"url": "https://makerworld.com.cn/zh/models/2587619-test#profileId-2978680"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["source_type"] == "makerworld_cn"
+        assert resp.json()["selected_profile_id"] == 151216040
+        assert resp.json()["source_page_url"] == "https://makerworld.com.cn/models/2587619#profileId-2978680"
+
+    @pytest.mark.asyncio
+    async def test_same_numeric_global_design_is_not_a_china_import(self, async_client, db_session):
+        db_session.add(
+            LibraryFile(
+                filename="global.3mf",
+                file_path="library/global.3mf",
+                file_type="3mf",
+                file_size=10,
+                source_type="makerworld",
+                source_url="https://makerworld.com/models/2587619#profileId-2978680",
+            )
+        )
+        await db_session.commit()
+        svc = _fake_service(
+            resolve=ProviderResolvedModel(
+                ref=ProviderResourceRef(source_type="makerworld_cn", external_id="2587619"),
+                design={"id": 2587619},
+                instances=[],
+            )
+        )
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            resp = await async_client.post(
+                "/api/v1/makerworld/resolve",
+                json={"url": "https://makerworld.com.cn/zh/models/2587619"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["already_imported_library_ids"] == []
 
     @pytest.mark.asyncio
     async def test_flags_already_imported_library_ids(self, async_client, db_session):
@@ -342,6 +423,41 @@ class TestImport:
     real DB writes, real ``save_3mf_bytes_to_library``, real folder auto-creation."""
 
     _FAKE_3MF_BYTES = b"PK\x03\x04not-a-real-3mf"
+
+    @pytest.mark.asyncio
+    async def test_china_import_uses_instance_url_and_internal_profile(self, async_client, db_session):
+        info = ProviderDownloadInfo(
+            ref=ProviderResourceRef(source_type="makerworld_cn", external_id="2587619", sub_id="2978680"),
+            url="https://model-file.bambulab.cn/f.3mf?sig=test",
+            suggested_filename="china.3mf",
+            profile_id=151216040,
+        )
+        svc = _fake_service(
+            get_download=info,
+            download=ProviderDownload(file_bytes=self._FAKE_3MF_BYTES, filename="china.3mf"),
+        )
+        body = {
+            "model_id": 2587619,
+            "source_type": "makerworld_cn",
+            "instance_id": 2978680,
+            "profile_id": 151216040,
+        }
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            response = await async_client.post("/api/v1/makerworld/import", json=body)
+            repeated = await async_client.post("/api/v1/makerworld/import", json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()["profile_id"] == 151216040
+        assert repeated.json()["was_existing"] is True
+        assert repeated.json()["library_file_id"] == response.json()["library_file_id"]
+        row = await db_session.get(LibraryFile, response.json()["library_file_id"])
+        assert row.source_type == "makerworld_cn"
+        assert row.source_url == "https://makerworld.com.cn/models/2587619#profileId-2978680"
+        svc.download.assert_awaited_once()
+
+        body["instance_id"] = 999
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            mismatch = await async_client.post("/api/v1/makerworld/import", json=body)
+        assert mismatch.status_code == 400
 
     @pytest.mark.asyncio
     async def test_returns_existing_on_source_url_match(self, async_client, db_session):
@@ -807,6 +923,23 @@ class TestRecentImports:
         assert resp.json() == []
 
     @pytest.mark.asyncio
+    async def test_china_imports_are_included_with_region(self, async_client, db_session):
+        db_session.add(
+            LibraryFile(
+                filename="china.3mf",
+                file_path="library/china.3mf",
+                file_type="3mf",
+                file_size=10,
+                source_type="makerworld_cn",
+                source_url="https://makerworld.com.cn/models/2587619#profileId-2978680",
+            )
+        )
+        await db_session.commit()
+        resp = await async_client.get("/api/v1/makerworld/recent-imports")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()[0]["source_type"] == "makerworld_cn"
+
+    @pytest.mark.asyncio
     async def test_returns_items_newest_first(self, async_client, db_session):
         # Seed three rows with explicit, decreasing created_at timestamps so
         # ordering doesn't depend on auto-increment PK ordering.
@@ -877,6 +1010,7 @@ class TestRecentImports:
         item = resp.json()[0]
         assert set(item.keys()) == {
             "library_file_id",
+            "source_type",
             "filename",
             "folder_id",
             "thumbnail_path",

@@ -109,6 +109,7 @@ class ProviderStatus:
     can_download: bool
     auth_error: str | None = None
     credential_rejected: bool = False
+    region_mismatch: bool = False
 
 
 @dataclass
@@ -125,6 +126,8 @@ class ProviderResolvedModel:
     ref: ProviderResourceRef
     design: dict[str, Any]
     instances: list[dict[str, Any]] = field(default_factory=list)
+    selected_instance_id: int | None = None
+    selected_profile_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,7 @@ class ProviderDownloadInfo:
     ref: ProviderResourceRef
     url: str
     suggested_filename: str
+    profile_id: int | None = None
 
 
 @dataclass

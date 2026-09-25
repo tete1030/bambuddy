@@ -49,7 +49,7 @@ from backend.app.schemas.makerworld import (
     MakerWorldResolveRequest,
     MakerWorldStatus,
 )
-from backend.app.services.model_providers import makerworld_provider, registry
+from backend.app.services.model_providers import makerworld_china_provider, makerworld_provider, registry
 from backend.app.services.model_providers.base import (
     ModelProvider,
     ProviderAuthError,
@@ -166,7 +166,7 @@ def _map_service_error(exc: ProviderError) -> HTTPException:
 
 @router.get("/thumbnail")
 async def proxy_thumbnail(
-    url: str = Query(..., description="MakerWorld CDN image URL (makerworld.bblmw.com or public-cdn.bblmw.com)"),
+    url: str = Query(..., description="MakerWorld global or China CDN image URL"),
 ):
     """Proxy a MakerWorld CDN thumbnail.
 
@@ -186,7 +186,9 @@ async def proxy_thumbnail(
     URLs are content-addressable (filename contains a hash), so the
     aggressive ``immutable`` cache-control is safe.
     """
-    service = MakerWorldService(thumbnail_hosts=makerworld_provider.thumbnail_hosts())
+    service = MakerWorldService(
+        thumbnail_hosts=(*makerworld_provider.thumbnail_hosts(), *makerworld_china_provider.thumbnail_hosts())
+    )
     try:
         payload, content_type = await service.fetch_thumbnail(url)
     except ProviderError as exc:
@@ -205,6 +207,7 @@ async def proxy_thumbnail(
 
 @router.get("/status", response_model=MakerWorldStatus)
 async def get_status(
+    source_type: str = Query(default="makerworld"),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermissionIfAuthEnabled(makerworld_provider.view_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
@@ -217,7 +220,8 @@ async def get_status(
     stored token rather than always reporting ``False`` (#1777, same shape
     as the cloud-presets fix in #1182).
     """
-    service = await _build_service(db, makerworld_provider, current_user, api_key_cloud_owner)
+    provider = _provider_for_source(source_type)
+    service = await _build_service(db, provider, current_user, api_key_cloud_owner)
     try:
         status = await service.get_status(db)
     finally:
@@ -225,6 +229,8 @@ async def get_status(
     return MakerWorldStatus(
         has_cloud_token=status.authenticated,
         can_download=status.can_download,
+        source_type=provider.source_type,
+        region_mismatch=status.region_mismatch,
         # ``credential_rejected`` is the machine-readable "your sign-in
         # expired" state the provider set exactly when a stored token exists
         # *and* was rejected — no token means there is no sign-in to have
@@ -291,9 +297,13 @@ async def resolve_url(
 
     return MakerWorldResolvedModel(
         model_id=model_id,
+        source_type=provider.source_type,
         profile_id=profile_id,
         design=resolved.design,
         instances=resolved.instances,
+        selected_instance_id=resolved.selected_instance_id,
+        selected_profile_id=resolved.selected_profile_id,
+        source_page_url=provider.canonical_url(ref),
         already_imported_library_ids=already_imported,
     )
 
@@ -383,7 +393,11 @@ async def import_instance(
         info = await service.get_download(ref)
         # The provider enriches ``sub_id`` with the actually-resolved profile
         # when the caller omitted one.
-        resolved_profile_id = int(info.ref.sub_id) if info.ref.sub_id else None
+        resolved_profile_id = (
+            info.profile_id if info.profile_id is not None else (int(info.ref.sub_id) if info.ref.sub_id else None)
+        )
+        if info.profile_id is not None and body.instance_id is not None and str(body.instance_id) != info.ref.sub_id:
+            raise HTTPException(status_code=400, detail="Instance ID does not match the selected MakerWorld profile")
 
         # Canonical URL includes profile_id so each plate gets its own library
         # entry (see ``ModelProvider.canonical_url``).
@@ -471,7 +485,7 @@ async def recent_imports(
 
     result = await db.execute(
         LibraryFile.active()
-        .where(LibraryFile.source_type == makerworld_provider.source_type)
+        .where(LibraryFile.source_type.in_((makerworld_provider.source_type, makerworld_china_provider.source_type)))
         .order_by(LibraryFile.created_at.desc())
         .limit(capped)
     )
@@ -480,6 +494,7 @@ async def recent_imports(
     return [
         MakerWorldRecentImport(
             library_file_id=row.id,
+            source_type=row.source_type or makerworld_provider.source_type,
             filename=row.filename,
             folder_id=row.folder_id,
             thumbnail_path=row.thumbnail_path,

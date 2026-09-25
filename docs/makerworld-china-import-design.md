@@ -1,6 +1,8 @@
 # MakerWorld China import design
 
-Status: design proposal; no Bambuddy runtime changes in this branch yet.
+Status: core China URL-to-Library implementation on this feature branch;
+not deployed. The iOS Share Sheet shortcut and live Library smoke test remain
+follow-up gates.
 
 Base: `v1.2.5.6` (`d80414b518b602448192abd74506369b523cf29b`), the latest
 non-prerelease release when this branch was created on 2026-09-26.
@@ -201,3 +203,22 @@ rebase the implementation onto current `dev`, and prepare companion wiki
 documentation. Do not deploy the fork to an existing Bambuddy installation
 until its database and Docker configuration are backed up and the staged
 import and global regression gates pass.
+
+## Implementation checkpoint
+
+The branch now registers `makerworld_cn` separately, maps China page instance
+IDs to internal download profile IDs, checks the stored Bambu Cloud region,
+keeps China source URLs and default Library folder separate, and uses exact
+China CDN hosts. The existing `/makerworld/resolve`, `/import`, `/status`, and
+`/recent-imports` routes expose the additive region fields. The MakerWorld
+page passes the returned source type, shows the selected instance and region
+mismatch, proxies China thumbnails, and opens the regional source page.
+
+Automated coverage uses synthetic credentials and download URLs for routing,
+mapping, region rejection, exact CDN hosts, idempotent Library persistence,
+and the frontend China import flow. A prior read-only probe confirmed the
+public China metadata and a four-byte signed 3MF response; it did not save a
+full file in a Library. Before declaring the feature ready for use, run the
+staging and mobile smoke gates above against a disposable installation and
+verify the full 3MF, duplicate import, and Library lookup. Do not infer that
+the existing live Unraid Bambuddy instance has this code.

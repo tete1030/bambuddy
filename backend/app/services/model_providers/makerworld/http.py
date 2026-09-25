@@ -25,6 +25,9 @@ from backend.app.services.model_providers.makerworld.errors import MakerWorldUna
 # (the website ``makerworld.com`` is, and plain httpx requests there get
 # fingerprinted as bot traffic and served "Please log in").
 MAKERWORLD_API_BASE = "https://api.bambulab.com/v1/design-service"
+MAKERWORLD_CHINA_API_BASE = "https://api.bambulab.cn/v1/design-service"
+MAKERWORLD_PROFILE_API_BASE = "https://api.bambulab.com/v1/iot-service/api/user/profile"
+MAKERWORLD_CHINA_PROFILE_API_BASE = "https://api.bambulab.cn/v1/iot-service/api/user/profile"
 
 # Besides MakerWorld's own CDN, Bambu Cloud also issues AWS S3 presigned
 # URLs (e.g. ``s3.us-west-2.amazonaws.com``) from the iot-service download
@@ -45,6 +48,8 @@ _ALLOWED_DOWNLOAD_SUFFIXES = (".amazonaws.com",)
 # those methods return by default. Lives here with the other transport guards
 # so the allowlist is in one place.
 MAKERWORLD_CDN_HOSTS = ("makerworld.bblmw.com", "public-cdn.bblmw.com")
+MAKERWORLD_CHINA_THUMBNAIL_HOSTS = ("makerworld.bblmw.cn", "public-cdn.bblmw.cn")
+MAKERWORLD_CHINA_DOWNLOAD_HOSTS = (*MAKERWORLD_CHINA_THUMBNAIL_HOSTS, "model-file.bambulab.cn")
 
 # Client identity sent to MakerWorld / api.bambulab.com. We identify honestly
 # as Bambuddy with a source URL so Bambu can distinguish our traffic from

@@ -1603,13 +1603,19 @@ export interface OrcaProfileDetail {
 export interface MakerworldStatus {
   has_cloud_token: boolean;
   can_download: boolean;
+  source_type?: string;
+  region_mismatch?: boolean;
   /** A token is stored but Bambu rejected it — downloads will fail until the user signs in again. */
   sign_in_expired?: boolean;
 }
 
 export interface MakerworldResolvedModel {
   model_id: number;
+  source_type?: string;
   profile_id: number | null;
+  selected_instance_id?: number | null;
+  selected_profile_id?: number | null;
+  source_page_url?: string | null;
   design: Record<string, unknown>;
   instances: Array<Record<string, unknown>>;
   already_imported_library_ids: number[];
@@ -1625,6 +1631,7 @@ export interface MakerworldImportResponse {
 
 export interface MakerworldRecentImport {
   library_file_id: number;
+  source_type?: string;
   filename: string;
   folder_id: number | null;
   thumbnail_path: string | null;
@@ -5844,8 +5851,8 @@ export const api = {
   },
 
   // MakerWorld URL-paste import flow.
-  getMakerworldStatus: () =>
-    request<MakerworldStatus>('/makerworld/status'),
+  getMakerworldStatus: (sourceType = 'makerworld') =>
+    request<MakerworldStatus>(`/makerworld/status?source_type=${encodeURIComponent(sourceType)}`),
   resolveMakerworldUrl: (url: string) =>
     request<MakerworldResolvedModel>('/makerworld/resolve', {
       method: 'POST',
@@ -5858,6 +5865,7 @@ export const api = {
     instance_id: number | null,
     profile_id?: number | null,
     folder_id?: number | null,
+    source_type = 'makerworld',
   ) =>
     request<MakerworldImportResponse>('/makerworld/import', {
       method: 'POST',
@@ -5866,6 +5874,7 @@ export const api = {
         instance_id: instance_id ?? null,
         profile_id: profile_id ?? null,
         folder_id: folder_id ?? null,
+        source_type,
       }),
     }),
   getCloudSettingDetail: (settingId: string) =>

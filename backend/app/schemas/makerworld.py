@@ -23,12 +23,16 @@ class MakerWorldResolvedModel(BaseModel):
     """
 
     model_id: int
+    source_type: str = "makerworld"
     profile_id: int | None = Field(
         default=None,
         description="Specific profile from the URL's #profileId- fragment, if any",
     )
     design: dict[str, Any]
     instances: list[dict[str, Any]]
+    selected_instance_id: int | None = None
+    selected_profile_id: int | None = None
+    source_page_url: str | None = None
     already_imported_library_ids: list[int] = Field(
         default_factory=list,
         description="LibraryFile IDs that were previously imported from this model URL",
@@ -63,7 +67,7 @@ class MakerWorldImportRequest(BaseModel):
     )
     instance_id: int | None = Field(
         default=None,
-        description="Retained for backwards compatibility; no longer used by the download flow.",
+        description="China page instance ID; checked against the selected internal profile when supplied.",
     )
     folder_id: int | None = Field(default=None, description="Target library folder; null = root")
 
@@ -72,6 +76,7 @@ class MakerWorldRecentImport(BaseModel):
     """One row in the 'recent MakerWorld imports' list."""
 
     library_file_id: int
+    source_type: str = "makerworld"
     filename: str
     folder_id: int | None
     thumbnail_path: str | None = Field(
@@ -119,6 +124,8 @@ class MakerWorldStatus(BaseModel):
 
     has_cloud_token: bool = Field(description="Whether the caller's account has a stored Bambu Cloud token")
     can_download: bool = Field(description="Shortcut: has_cloud_token AND it looks valid. Downloads require it.")
+    source_type: str = "makerworld"
+    region_mismatch: bool = False
     sign_in_expired: bool = Field(
         default=False,
         description="A token is stored but Bambu has rejected it — the user must sign in to Bambu Cloud again.",

@@ -56,6 +56,7 @@ from backend.app.services.model_providers.makerworld.http import (
     _REFUSED_THUMBNAIL_MIMES,
     MAKERWORLD_API_BASE,
     MAKERWORLD_CDN_HOSTS,
+    MAKERWORLD_PROFILE_API_BASE,
     _download_s3_urllib,
     _extract_upstream_error,
 )
@@ -107,6 +108,12 @@ class MakerWorldService(ProviderService):
         on_auth_failure: Callable[[], Awaitable[None]] | None = None,
         thumbnail_hosts: tuple[str, ...] = MAKERWORLD_CDN_HOSTS,
         download_hosts: tuple[str, ...] = MAKERWORLD_CDN_HOSTS,
+        design_api_base: str = MAKERWORLD_API_BASE,
+        profile_api_base: str = MAKERWORLD_PROFILE_API_BASE,
+        referer: str = "https://makerworld.com/",
+        account_region: str | None = None,
+        required_region: str | None = None,
+        canonical_instance_ids: bool = False,
     ):
         # Fired when Bambu rejects the stored token (401). MakerWorld runs on the
         # same Bambu Cloud bearer as everything else, so a rejection here means
@@ -120,6 +127,12 @@ class MakerWorldService(ProviderService):
         # by coincidence (interface contract on ``ProviderService``).
         self._thumbnail_hosts = tuple(thumbnail_hosts)
         self._download_hosts = tuple(download_hosts)
+        self._design_api_base = design_api_base
+        self._profile_api_base = profile_api_base
+        self._referer = referer
+        self._account_region = account_region
+        self._required_region = required_region
+        self._canonical_instance_ids = canonical_instance_ids
         if client is not None:
             self._client = client
             self._owns_client = False
@@ -158,6 +171,7 @@ class MakerWorldService(ProviderService):
 
     def _headers(self) -> dict[str, str]:
         headers = dict(_CLIENT_HEADERS)
+        headers["Referer"] = self._referer
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
         return headers
@@ -171,11 +185,13 @@ class MakerWorldService(ProviderService):
         sign-in expired" rather than a bare "sign in"."""
         has_token = bool(self._auth_token)
         expired = has_token and await is_cloud_token_invalid(db, self._user)
+        region_mismatch = bool(has_token and self._required_region and self._account_region != self._required_region)
         return ProviderStatus(
             authenticated=has_token,
-            can_download=has_token and not expired,
+            can_download=has_token and not expired and not region_mismatch,
             auth_error=_SIGN_IN_EXPIRED_MESSAGE if expired else None,
             credential_rejected=expired,
+            region_mismatch=region_mismatch,
         )
 
     async def resolve(self, ref: ProviderResourceRef) -> ProviderResolvedModel:
@@ -218,7 +234,32 @@ class MakerWorldService(ProviderService):
                     inst["compatibility"] = extra["compatibility"]
                     inst["otherCompatibility"] = extra["otherCompatibility"]
 
-        return ProviderResolvedModel(ref=ref, design=design, instances=instances)
+        selected_instance_id = None
+        selected_profile_id = None
+        if self._canonical_instance_ids:
+            selected = None
+            if ref.sub_id is not None:
+                selected = next(
+                    (item for item in instances if isinstance(item, dict) and item.get("id") == int(ref.sub_id)),
+                    None,
+                )
+                if selected is None:
+                    raise MakerWorldUrlError(f"MakerWorld China instance {ref.sub_id} was not found in this model")
+            elif len(instances) == 1:
+                selected = instances[0]
+            if selected is not None:
+                selected_instance_id = selected.get("id")
+                selected_profile_id = selected.get("profileId")
+                if not isinstance(selected_instance_id, int) or not isinstance(selected_profile_id, int):
+                    raise MakerWorldUnavailableError("MakerWorld China instance is missing its profile mapping")
+
+        return ProviderResolvedModel(
+            ref=ref,
+            design=design,
+            instances=instances,
+            selected_instance_id=selected_instance_id,
+            selected_profile_id=selected_profile_id,
+        )
 
     async def get_download(self, ref: ProviderResourceRef) -> ProviderDownloadInfo:
         """Resolve the signed 3MF download for a specific MakerWorld profile.
@@ -229,6 +270,9 @@ class MakerWorldService(ProviderService):
         the caller didn't specify one. Enriches ``ref.sub_id`` with the actual
         profile used so the route can build the per-plate dedupe key.
         """
+        if self._required_region and self._auth_token and self._account_region != self._required_region:
+            raise MakerWorldAuthError("Sign in to Bambu Cloud with the China region to import this model")
+
         model_id = int(ref.external_id)
         design = await self.get_design(model_id)
 
@@ -237,7 +281,31 @@ class MakerWorldService(ProviderService):
             raise MakerWorldUnavailableError("MakerWorld design metadata missing the modelId field")
 
         profile_id = int(ref.sub_id) if ref.sub_id else None
-        if profile_id is None:
+        instance_id = None
+        if self._canonical_instance_ids:
+            envelope = await self.get_design_instances(model_id)
+            instances = envelope.get("hits") or design.get("instances") or []
+            valid_instances = [
+                item
+                for item in instances
+                if isinstance(item, dict)
+                and isinstance(item.get("id"), int)
+                and item["id"] > 0
+                and isinstance(item.get("profileId"), int)
+                and item["profileId"] > 0
+            ]
+            if not valid_instances:
+                raise MakerWorldUnavailableError("MakerWorld China returned no usable print profiles for this model")
+            if profile_id is None and len(valid_instances) > 1:
+                raise MakerWorldUrlError("Choose a MakerWorld China print profile before importing")
+            selected = next(
+                (item for item in valid_instances if profile_id is None or item["profileId"] == profile_id), None
+            )
+            if selected is None:
+                raise MakerWorldUrlError("The selected MakerWorld China profile does not belong to this model")
+            profile_id = selected["profileId"]
+            instance_id = selected["id"]
+        elif profile_id is None:
             for instance in design.get("instances") or []:
                 pid = instance.get("profileId")
                 if isinstance(pid, int) and pid > 0:
@@ -265,9 +333,10 @@ class MakerWorldService(ProviderService):
         suggested_filename = raw_name if isinstance(raw_name, str) and raw_name.strip() else ""
 
         return ProviderDownloadInfo(
-            ref=replace(ref, sub_id=str(profile_id)),
+            ref=replace(ref, sub_id=str(instance_id if instance_id is not None else profile_id)),
             url=signed_url,
             suggested_filename=suggested_filename,
+            profile_id=profile_id if self._canonical_instance_ids else None,
         )
 
     async def download(self, info: ProviderDownloadInfo) -> ProviderDownload:
@@ -286,7 +355,7 @@ class MakerWorldService(ProviderService):
         a subsequent call; hammering beyond one retry provokes a stronger
         block, so we stop there and surface a useful error.
         """
-        url = f"{MAKERWORLD_API_BASE}{path}"
+        url = f"{self._design_api_base}{path}"
 
         for attempt in range(2):
             try:
@@ -421,9 +490,11 @@ class MakerWorldService(ProviderService):
         if not self._auth_token:
             raise MakerWorldAuthError("Downloading files from MakerWorld requires a Bambu Cloud login")
 
-        url = f"https://api.bambulab.com/v1/iot-service/api/user/profile/{int(profile_id)}"
-        headers = dict(_CLIENT_HEADERS)
-        headers["Authorization"] = f"Bearer {self._auth_token}"
+        if self._required_region and self._account_region != self._required_region:
+            raise MakerWorldAuthError("Sign in to Bambu Cloud with the China region to import this model")
+
+        url = f"{self._profile_api_base}/{int(profile_id)}"
+        headers = self._headers()
 
         try:
             response = await self._client.get(
@@ -474,10 +545,12 @@ class MakerWorldService(ProviderService):
         """
         try:
             parsed = urlparse(signed_url)
+            host = (parsed.hostname or "").lower()
+            has_custom_port = parsed.port is not None
         except ValueError as exc:
             raise MakerWorldUrlError(f"Invalid download URL: {exc}") from exc
-
-        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or parsed.username or parsed.password or has_custom_port:
+            raise MakerWorldUrlError("MakerWorld download URL must use HTTPS without credentials or a custom port")
         is_allowed = host in self._download_hosts or any(host.endswith(suffix) for suffix in _ALLOWED_DOWNLOAD_SUFFIXES)
         if not is_allowed:
             raise MakerWorldUrlError(f"Refusing to download from non-MakerWorld host: {host!r}")
@@ -534,10 +607,12 @@ class MakerWorldService(ProviderService):
         """
         try:
             parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            has_custom_port = parsed.port is not None
         except ValueError as exc:
             raise MakerWorldUrlError(f"Invalid thumbnail URL: {exc}") from exc
-
-        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or parsed.username or parsed.password or has_custom_port:
+            raise MakerWorldUrlError("MakerWorld thumbnail URL must use HTTPS without credentials or a custom port")
         if host not in self._thumbnail_hosts:
             raise MakerWorldUrlError(f"Refusing to fetch thumbnail from non-MakerWorld host: {host!r}")
 
@@ -548,7 +623,9 @@ class MakerWorldService(ProviderService):
         # directly. A redirect response surfaces as ``MakerWorldUnavailable``
         # below.
         try:
-            response = await self._client.get(url, headers=self._headers(), timeout=20.0, follow_redirects=False)
+            response = await self._client.get(
+                url, headers={"User-Agent": _CLIENT_HEADERS["User-Agent"]}, timeout=20.0, follow_redirects=False
+            )
         except httpx.TimeoutException as exc:
             raise MakerWorldUnavailableError(f"Thumbnail request timed out: {exc}") from exc
         except httpx.HTTPError as exc:

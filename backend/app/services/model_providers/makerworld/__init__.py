@@ -5,8 +5,10 @@ in the sibling modules (``service``, ``http``, ``url``, ``errors``, ``auth``).
 """
 
 from backend.app.services.model_providers.makerworld.provider import (
+    MakerWorldChinaProvider,
     MakerWorldProvider,
+    makerworld_china_provider,
     makerworld_provider,
 )
 
-__all__ = ["MakerWorldProvider", "makerworld_provider"]
+__all__ = ["MakerWorldChinaProvider", "MakerWorldProvider", "makerworld_china_provider", "makerworld_provider"]

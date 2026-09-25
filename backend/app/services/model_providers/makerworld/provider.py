@@ -27,7 +27,15 @@ from backend.app.services.model_providers.makerworld.auth import (
     get_stored_token,
     mark_cloud_token_invalid,
 )
-from backend.app.services.model_providers.makerworld.http import MAKERWORLD_CDN_HOSTS
+from backend.app.services.model_providers.makerworld.http import (
+    MAKERWORLD_API_BASE,
+    MAKERWORLD_CDN_HOSTS,
+    MAKERWORLD_CHINA_API_BASE,
+    MAKERWORLD_CHINA_DOWNLOAD_HOSTS,
+    MAKERWORLD_CHINA_PROFILE_API_BASE,
+    MAKERWORLD_CHINA_THUMBNAIL_HOSTS,
+    MAKERWORLD_PROFILE_API_BASE,
+)
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
 
 if TYPE_CHECKING:
@@ -45,6 +53,12 @@ class MakerWorldProvider(ModelProvider):
     source_type = "makerworld"
     display_name = "MakerWorld"
     host_patterns = ("makerworld.com",)
+    host_name = "makerworld.com"
+    design_api_base = MAKERWORLD_API_BASE
+    profile_api_base = MAKERWORLD_PROFILE_API_BASE
+    referer = "https://makerworld.com/"
+    required_region: str | None = None
+    canonical_instance_ids = False
     auth = ProviderAuthConfig(
         auth_type=ProviderAuthType.BAMBU_CLOUD_BEARER,
         display_label="Bambu Cloud sign-in",
@@ -78,7 +92,7 @@ class MakerWorldProvider(ModelProvider):
         flag those installs read back on the status endpoints.
         """
         identity = user if user is not None else api_key_owner
-        token, _email, _region = await get_stored_token(db, identity)
+        token, _email, region = await get_stored_token(db, identity)
         user_id = identity.id if identity is not None else None
         return MakerWorldService(
             client=client,
@@ -90,13 +104,19 @@ class MakerWorldProvider(ModelProvider):
             # ``fetch_thumbnail`` / ``download``).
             thumbnail_hosts=self.thumbnail_hosts(),
             download_hosts=self.download_hosts(),
+            design_api_base=self.design_api_base,
+            profile_api_base=self.profile_api_base,
+            referer=self.referer,
+            account_region=region,
+            required_region=self.required_region,
+            canonical_instance_ids=self.canonical_instance_ids,
         )
 
     def parse_url(self, url: str) -> ProviderResourceRef:
-        return mw_url.parse_url(url)
+        return mw_url.parse_url(url, host_name=self.host_name, source_type=self.source_type)
 
     def canonical_url(self, ref: ProviderResourceRef) -> str:
-        return mw_url.canonical_url(ref)
+        return mw_url.canonical_url(ref, host_name=self.host_name)
 
     def source_url_filter(self, column, external_id: str):
         """Whole-model key plus every per-plate key — MakerWorld's canonical
@@ -104,7 +124,7 @@ class MakerWorldProvider(ModelProvider):
         ``url.canonical_url``), so the already-imported detection must match
         both. The ``#profileId-`` fragment lives here with the descriptor
         because it is part of this provider's URL contract."""
-        prefix = mw_url.canonical_url(ProviderResourceRef(source_type=self.source_type, external_id=external_id))
+        prefix = self.canonical_url(ProviderResourceRef(source_type=self.source_type, external_id=external_id))
         return (column == prefix) | (column.like(f"{prefix}#profileId-%"))
 
     def thumbnail_hosts(self) -> tuple[str, ...]:
@@ -115,3 +135,25 @@ class MakerWorldProvider(ModelProvider):
 
 
 makerworld_provider = MakerWorldProvider()
+
+
+class MakerWorldChinaProvider(MakerWorldProvider):
+    source_type = "makerworld_cn"
+    display_name = "MakerWorld China"
+    host_patterns = ("makerworld.com.cn",)
+    host_name = "makerworld.com.cn"
+    design_api_base = MAKERWORLD_CHINA_API_BASE
+    profile_api_base = MAKERWORLD_CHINA_PROFILE_API_BASE
+    referer = "https://makerworld.com.cn/"
+    required_region = "china"
+    canonical_instance_ids = True
+    default_folder_name = "MakerWorld China"
+
+    def thumbnail_hosts(self) -> tuple[str, ...]:
+        return MAKERWORLD_CHINA_THUMBNAIL_HOSTS
+
+    def download_hosts(self) -> tuple[str, ...]:
+        return MAKERWORLD_CHINA_DOWNLOAD_HOSTS
+
+
+makerworld_china_provider = MakerWorldChinaProvider()

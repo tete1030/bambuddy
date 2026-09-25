@@ -15,11 +15,16 @@ from backend.app.services.model_providers.makerworld.errors import MakerWorldUrl
 
 MAKERWORLD_HOST = "makerworld.com"  # Used only for URL parsing (input validation)
 
-_MODEL_ID_RE = re.compile(r"/models/(\d+)")
-_PROFILE_ID_RE = re.compile(r"#profileId[-=](\d+)")
+_MODEL_ID_RE = re.compile(r"(?:^|/)models/(\d+)(?=$|[-/])")
+_PROFILE_ID_RE = re.compile(r"^profileId[-=](\d+)$")
 
 
-def parse_url(url: str) -> ProviderResourceRef:
+def parse_url(
+    url: str,
+    *,
+    host_name: str = MAKERWORLD_HOST,
+    source_type: str = "makerworld",
+) -> ProviderResourceRef:
     """Extract a :class:`ProviderResourceRef` from a MakerWorld URL.
 
     Accepts any of:
@@ -40,9 +45,15 @@ def parse_url(url: str) -> ProviderResourceRef:
     except ValueError as exc:
         raise MakerWorldUrlError(f"Could not parse URL: {exc}") from exc
 
-    host = (parsed.hostname or "").lower()
-    if host != MAKERWORLD_HOST and not host.endswith("." + MAKERWORLD_HOST):
-        raise MakerWorldUrlError(f"Not a MakerWorld URL (host={host!r}); expected makerworld.com")
+    try:
+        host = (parsed.hostname or "").lower()
+        has_custom_port = parsed.port is not None
+    except ValueError as exc:
+        raise MakerWorldUrlError(f"Invalid MakerWorld URL authority: {exc}") from exc
+    if parsed.scheme != "https" or parsed.username or parsed.password or has_custom_port:
+        raise MakerWorldUrlError("MakerWorld model URLs must use HTTPS without credentials or a custom port")
+    if host != host_name and not host.endswith("." + host_name):
+        raise MakerWorldUrlError(f"Not a MakerWorld URL (host={host!r}); expected {host_name}")
 
     model_match = _MODEL_ID_RE.search(parsed.path)
     if not model_match:
@@ -51,19 +62,21 @@ def parse_url(url: str) -> ProviderResourceRef:
 
     profile_id: int | None = None
     if parsed.fragment:
-        profile_match = _PROFILE_ID_RE.search("#" + parsed.fragment)
+        profile_match = _PROFILE_ID_RE.fullmatch(parsed.fragment)
         if profile_match:
             profile_id = int(profile_match.group(1))
+        elif parsed.fragment.startswith("profileId"):
+            raise MakerWorldUrlError("Malformed MakerWorld profile ID in URL fragment")
 
     return ProviderResourceRef(
-        source_type="makerworld",
+        source_type=source_type,
         external_id=str(model_id),
         sub_id=str(profile_id) if profile_id is not None else None,
         original_url=url,
     )
 
 
-def canonical_url(ref: ProviderResourceRef) -> str:
+def canonical_url(ref: ProviderResourceRef, *, host_name: str = MAKERWORLD_HOST) -> str:
     """Build a stable dedupe key for a MakerWorld resource.
 
     Dedupe is keyed per *plate* (profile) rather than per model, since the
@@ -78,5 +91,5 @@ def canonical_url(ref: ProviderResourceRef) -> str:
     compatibility with existing rows.
     """
     if ref.sub_id:
-        return f"https://makerworld.com/models/{ref.external_id}#profileId-{ref.sub_id}"
-    return f"https://makerworld.com/models/{ref.external_id}"
+        return f"https://{host_name}/models/{ref.external_id}#profileId-{ref.sub_id}"
+    return f"https://{host_name}/models/{ref.external_id}"
