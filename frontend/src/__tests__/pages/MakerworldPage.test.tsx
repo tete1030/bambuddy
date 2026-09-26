@@ -83,7 +83,10 @@ function useAuthedHandlers(opts: {
   );
 }
 
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  server.resetHandlers();
+  window.history.replaceState({}, '', '/');
+});
 
 describe('MakerworldPage', () => {
   it('renders the sign-in-required banner when no Bambu Cloud token is stored', async () => {
@@ -122,6 +125,29 @@ describe('MakerworldPage', () => {
     expect(await screen.findByText('Seed Starter')).toBeInTheDocument();
     expect(screen.getByText('9 cells')).toBeInTheDocument();
     expect(screen.getByText('12 cells')).toBeInTheDocument();
+  });
+
+  it('opens a shared China URL with its instance fragment intact', async () => {
+    useAuthedHandlers();
+    const sharedUrl = 'https://makerworld.com.cn/zh/models/2587619-test#profileId-2978680';
+    window.history.replaceState({}, '', `/makerworld?url=${encodeURIComponent(sharedUrl)}`);
+    server.use(
+      http.post('*/makerworld/resolve', async ({ request }) => {
+        expect((await request.json()) as { url: string }).toEqual({ url: sharedUrl });
+        return HttpResponse.json(resolveResponse({
+          model_id: 2587619,
+          source_type: 'makerworld_cn',
+          selected_instance_id: 2978680,
+          selected_profile_id: 151216040,
+          instances: [{ id: 2978680, profileId: 151216040, title: 'China plate' }],
+        }));
+      }),
+    );
+
+    render(<MakerworldPage />);
+
+    expect(await screen.findByPlaceholderText(/makerworld\.com/i)).toHaveValue(sharedUrl);
+    expect(await screen.findByText('China plate')).toBeInTheDocument();
   });
 
   it('uses the China region, selected instance and source type for import', async () => {

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, Download, ExternalLink, FolderOpen, Globe, Images, Loader2, Trash2, X } from 'lucide-react';
@@ -112,10 +112,13 @@ export function MakerworldPage() {
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const { search } = useLocation();
+  const sharedUrl = useMemo(() => new URLSearchParams(search).get('url')?.trim() ?? '', [search]);
+  const lastSharedUrl = useRef<string | null>(null);
 
   const canImport = hasPermission('makerworld:import');
 
-  const [urlInput, setUrlInput] = useState('');
+  const [urlInput, setUrlInput] = useState(sharedUrl);
   const [resolved, setResolved] = useState<MakerworldResolvedModel | null>(null);
   const sourceType = resolved?.source_type ?? 'makerworld';
   const isChina = sourceType === 'makerworld_cn';
@@ -211,6 +214,21 @@ export function MakerworldPage() {
     },
     onError: (err: Error) => showToast(err.message || t('makerworld.errors.resolveFailed'), 'error'),
   });
+  const resolveUrl = resolveMutation.mutate;
+
+  useEffect(() => {
+    if (!sharedUrl) {
+      lastSharedUrl.current = null;
+      return;
+    }
+    if (lastSharedUrl.current === sharedUrl) return;
+    lastSharedUrl.current = sharedUrl;
+    setUrlInput(sharedUrl);
+    setResolved(null);
+    setResolvedForUrl('');
+    setImportsByProfile({});
+    resolveUrl(sharedUrl);
+  }, [sharedUrl, resolveUrl]);
 
   // URL-change detection: if the user edits the URL input away from what
   // ``resolved`` was fetched for, drop the stale preview so they can't
