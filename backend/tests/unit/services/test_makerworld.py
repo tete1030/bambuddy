@@ -46,6 +46,10 @@ class TestParseUrl:
         assert ref.external_id == "42"
         assert ref.sub_id is None
 
+    def test_global_parser_retains_legacy_input_forms(self):
+        ref = parse_url("http://makerworld.com/models/123legacy#profileId-456-extra")
+        assert (ref.external_id, ref.sub_id) == ("123", "456")
+
     def test_rejects_non_makerworld_host(self):
         with pytest.raises(MakerWorldUrlError):
             parse_url("https://thingiverse.com/things/123")
@@ -155,6 +159,7 @@ class TestChinaProvider:
         payload, mime = await service.fetch_thumbnail("https://makerworld.bblmw.cn/cover.png")
         assert (payload, mime) == (b"\x89PNG", "image/png")
         assert "Authorization" not in service._client.get.await_args.kwargs["headers"]
+        assert service._client.get.await_args.kwargs["headers"]["Referer"] == "https://makerworld.com.cn/"
         with pytest.raises(MakerWorldUrlError):
             await service.fetch_thumbnail("https://model-file.bambulab.cn/cover.png")
 
@@ -1015,6 +1020,7 @@ class TestFetchThumbnail:
 
         await service.fetch_thumbnail("https://makerworld.bblmw.com/makerworld/model/X/cover.jpg")
         assert service._client.get.call_args.kwargs["follow_redirects"] is False
+        assert service._client.get.call_args.kwargs["headers"]["Referer"] == "https://makerworld.com/"
 
     @pytest.mark.asyncio
     async def test_rejects_html_content_type_even_with_image_extension(self, service):

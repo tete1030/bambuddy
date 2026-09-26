@@ -624,7 +624,10 @@ class MakerWorldService(ProviderService):
         # below.
         try:
             response = await self._client.get(
-                url, headers={"User-Agent": _CLIENT_HEADERS["User-Agent"]}, timeout=20.0, follow_redirects=False
+                url,
+                headers={"User-Agent": _CLIENT_HEADERS["User-Agent"], "Referer": self._referer},
+                timeout=20.0,
+                follow_redirects=False,
             )
         except httpx.TimeoutException as exc:
             raise MakerWorldUnavailableError(f"Thumbnail request timed out: {exc}") from exc

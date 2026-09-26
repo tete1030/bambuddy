@@ -15,8 +15,10 @@ from backend.app.services.model_providers.makerworld.errors import MakerWorldUrl
 
 MAKERWORLD_HOST = "makerworld.com"  # Used only for URL parsing (input validation)
 
-_MODEL_ID_RE = re.compile(r"(?:^|/)models/(\d+)(?=$|[-/])")
-_PROFILE_ID_RE = re.compile(r"^profileId[-=](\d+)$")
+_MODEL_ID_RE = re.compile(r"/models/(\d+)")
+_CHINA_MODEL_ID_RE = re.compile(r"(?:^|/)models/(\d+)(?=$|[-/])")
+_PROFILE_ID_RE = re.compile(r"#profileId[-=](\d+)")
+_CHINA_PROFILE_ID_RE = re.compile(r"^profileId[-=](\d+)$")
 
 
 def parse_url(
@@ -45,27 +47,34 @@ def parse_url(
     except ValueError as exc:
         raise MakerWorldUrlError(f"Could not parse URL: {exc}") from exc
 
-    try:
-        host = (parsed.hostname or "").lower()
-        has_custom_port = parsed.port is not None
-    except ValueError as exc:
-        raise MakerWorldUrlError(f"Invalid MakerWorld URL authority: {exc}") from exc
-    if parsed.scheme != "https" or parsed.username or parsed.password or has_custom_port:
-        raise MakerWorldUrlError("MakerWorld model URLs must use HTTPS without credentials or a custom port")
+    host = (parsed.hostname or "").lower()
+    is_china = source_type == "makerworld_cn"
+    if is_china:
+        try:
+            has_custom_port = parsed.port is not None
+        except ValueError as exc:
+            raise MakerWorldUrlError(f"Invalid MakerWorld URL authority: {exc}") from exc
+        if parsed.scheme != "https" or parsed.username or parsed.password or has_custom_port:
+            raise MakerWorldUrlError("MakerWorld China model URLs must use HTTPS without credentials or a custom port")
     if host != host_name and not host.endswith("." + host_name):
         raise MakerWorldUrlError(f"Not a MakerWorld URL (host={host!r}); expected {host_name}")
 
-    model_match = _MODEL_ID_RE.search(parsed.path)
+    model_re = _CHINA_MODEL_ID_RE if is_china else _MODEL_ID_RE
+    model_match = model_re.search(parsed.path)
     if not model_match:
         raise MakerWorldUrlError("URL does not contain a /models/{id} segment")
     model_id = int(model_match.group(1))
 
     profile_id: int | None = None
     if parsed.fragment:
-        profile_match = _PROFILE_ID_RE.fullmatch(parsed.fragment)
+        profile_match = (
+            _CHINA_PROFILE_ID_RE.fullmatch(parsed.fragment)
+            if is_china
+            else _PROFILE_ID_RE.search("#" + parsed.fragment)
+        )
         if profile_match:
             profile_id = int(profile_match.group(1))
-        elif parsed.fragment.startswith("profileId"):
+        elif is_china and parsed.fragment.startswith("profileId"):
             raise MakerWorldUrlError("Malformed MakerWorld profile ID in URL fragment")
 
     return ProviderResourceRef(
